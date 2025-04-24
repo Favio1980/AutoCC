@@ -14,8 +14,8 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => console.log("Conectado a MongoDB"))
 .catch(err => console.error("Error de conexión a MongoDB:", err));
 
-const client = new vision.ImageAnnotatorClient({
-  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
+const credentials = JSON.parse(process.env.OCR_CREDENTIALS_JSON);
+const client = new vision.ImageAnnotatorClient({ credentials });
 });
 
 app.use(express.json({ limit: '10mb' }));
