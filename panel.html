@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nebula — Panel de Control</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --bg2: #111118;
+    --bg3: #1a1a24;
+    --border: rgba(255,255,255,0.07);
+    --accent: #7c6dfa;
+    --accent2: #a89bff;
+    --green: #22d87a;
+    --red: #ff4d6d;
+    --yellow: #f5c518;
+    --text: #e8e8f0;
+    --muted: #6b6b80;
+    --card: #13131c;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Syne', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+  }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: 220px;
+    min-height: 100vh;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 28px 0;
+    position: fixed;
+    top: 0; left: 0;
+  }
+
+  .logo {
+    padding: 0 24px 28px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+
+  .logo span {
+    font-size: 22px;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+  }
+
+  .logo small {
+    display: block;
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 2px;
+    letter-spacing: 1px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 24px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.2s;
+    border-left: 2px solid transparent;
+  }
+
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+  .nav-item.active { color: var(--accent2); border-left-color: var(--accent); background: rgba(124,109,250,0.08); }
+  .nav-item .icon { font-size: 16px; width: 20px; text-align: center; }
+
+  .badge {
+    margin-left: auto;
+    background: var(--red);
+    color: white;
+    font-size: 10px;
+    font-family: 'DM Mono', monospace;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-weight: 500;
+  }
+
+  .sidebar-footer {
+    margin-top: auto;
+    padding: 20px 24px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .status-dot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+  }
+
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ── MAIN ── */
+  .main {
+    margin-left: 220px;
+    flex: 1;
+    padding: 32px;
+    min-height: 100vh;
+  }
+
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+  }
+
+  .page-title {
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 3px;
+    font-weight: 400;
+  }
+
+  .btn {
+    padding: 9px 18px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent2); transform: translateY(-1px); }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+  .btn-green { background: rgba(34,216,122,0.15); color: var(--green); border: 1px solid rgba(34,216,122,0.3); }
+  .btn-green:hover { background: rgba(34,216,122,0.25); }
+  .btn-red { background: rgba(255,77,109,0.15); color: var(--red); border: 1px solid rgba(255,77,109,0.3); }
+  .btn-red:hover { background: rgba(255,77,109,0.25); }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.15); }
+
+  /* ── STATS GRID ── */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+
+  .stat-card.green::before { background: var(--green); }
+  .stat-card.red::before { background: var(--red); }
+  .stat-card.yellow::before { background: var(--yellow); }
+  .stat-card.purple::before { background: var(--accent); }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'DM Mono', monospace;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  .stat-value {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -1px;
+  }
+
+  .stat-sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+    font-weight: 400;
+  }
+
+  /* ── TABLE ── */
+  .table-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }
+
+  .table-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .table-title {
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 12px 20px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+  }
+
+  td {
+    padding: 14px 20px;
+    font-size: 13px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    vertical-align: middle;
+  }
+
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-family: 'DM Mono', monospace;
+    font-weight: 500;
+  }
+
+  .pill.pending { background: rgba(245,197,24,0.12); color: var(--yellow); }
+  .pill.approved { background: rgba(34,216,122,0.12); color: var(--green); }
+  .pill.rejected { background: rgba(255,77,109,0.12); color: var(--red); }
+  .pill.manual { background: rgba(124,109,250,0.12); color: var(--accent2); }
+
+  .pill::before {
+    content: '';
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .mono { font-family: 'DM Mono', monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+
+  .actions { display: flex; gap: 6px; }
+
+  /* ── MODAL ── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    width: 480px;
+    max-width: 95vw;
+  }
+
+  .modal-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .modal-sub {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+
+  .ocr-text {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    max-height: 140px;
+    overflow-y: auto;
+    margin-bottom: 16px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+
+  .modal-field {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  .modal-field:last-of-type { border-bottom: none; margin-bottom: 16px; }
+  .modal-field .label { color: var(--muted); }
+  .modal-field .value { font-weight: 600; font-family: 'DM Mono', monospace; }
+
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+  /* ── EMPTY STATE ── */
+  .empty {
+    text-align: center;
+    padding: 48px 20px;
+    color: var(--muted);
+  }
+
+  .empty .icon { font-size: 36px; margin-bottom: 12px; }
+  .empty p { font-size: 14px; }
+
+  /* ── TOAST ── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transform: translateY(80px);
+    opacity: 0;
+    transition: all 0.3s;
+    z-index: 200;
+  }
+
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.success { border-color: rgba(34,216,122,0.4); }
+  .toast.error { border-color: rgba(255,77,109,0.4); }
+
+  /* ── REFRESH BTN ── */
+  .refresh-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 7px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: 'DM Mono', monospace;
+    transition: all 0.2s;
+  }
+
+  .refresh-btn:hover { color: var(--text); border-color: rgba(255,255,255,0.15); }
+
+  .img-preview {
+    width: 100%;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    border: 1px solid var(--border);
+    max-height: 200px;
+    object-fit: contain;
+    background: var(--bg3);
+  }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <div class="logo">
+    <span>NEBULA</span>
+    <small>CASINO PANEL v2.0</small>
+  </div>
+
+  <nav>
+    <div class="nav-item active" onclick="showPage('dashboard')">
+      <span class="icon">◈</span> Dashboard
+    </div>
+    <div class="nav-item" onclick="showPage('pendientes')">
+      <span class="icon">◉</span> Pendientes
+      <span class="badge" id="badge-pendientes">0</span>
+    </div>
+    <div class="nav-item" onclick="showPage('transacciones')">
+      <span class="icon">◎</span> Transacciones
+    </div>
+    <div class="nav-item" onclick="showPage('jugadores')">
+      <span class="icon">◇</span> Jugadores
+    </div>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="status-dot">
+      <span class="dot"></span>
+      Bot activo
+    </div>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main class="main">
+
+  <!-- DASHBOARD -->
+  <div class="page active" id="page-dashboard">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Dashboard</div>
+        <div class="page-subtitle">Resumen general del sistema</div>
+      </div>
+      <button class="refresh-btn" onclick="loadAll()">↻ Actualizar</button>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card green">
+        <div class="stat-label">Aprobados hoy</div>
+        <div class="stat-value" id="stat-aprobados">—</div>
+        <div class="stat-sub">Depósitos confirmados</div>
+      </div>
+      <div class="stat-card yellow">
+        <div class="stat-label">Pendientes</div>
+        <div class="stat-value" id="stat-pendientes">—</div>
+        <div class="stat-sub">Esperan revisión</div>
+      </div>
+      <div class="stat-card red">
+        <div class="stat-label">Rechazados</div>
+        <div class="stat-value" id="stat-rechazados">—</div>
+        <div class="stat-sub">Comprobantes falsos</div>
+      </div>
+      <div class="stat-card purple">
+        <div class="stat-label">Jugadores</div>
+        <div class="stat-value" id="stat-jugadores">—</div>
+        <div class="stat-sub">Total registrados</div>
+      </div>
+    </div>
+
+    <!-- Últimas transacciones -->
+    <div class="table-card">
+      <div class="table-header">
+        <span class="table-title">Últimas transacciones</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Teléfono</th>
+            <th>Monto</th>
+            <th>Estado</th>
+            <th>Fecha</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tbody-dashboard"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- PENDIENTES -->
+  <div class="page" id="page-pendientes">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Pendientes de revisión</div>
+        <div class="page-subtitle">Comprobantes que necesitan tu aprobación manual</div>
+      </div>
+      <button class="refresh-btn" onclick="loadAll()">↻ Actualizar</button>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>Teléfono</th>
+            <th>Monto detectado</th>
+            <th>Fecha</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-pendientes"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- TRANSACCIONES -->
+  <div class="page" id="page-transacciones">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Todas las transacciones</div>
+        <div class="page-subtitle">Historial completo de depósitos</div>
+      </div>
+      <button class="refresh-btn" onclick="loadAll()">↻ Actualizar</button>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>Teléfono</th>
+            <th>Monto</th>
+            <th>Estado</th>
+            <th>Fecha</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tbody-transacciones"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- JUGADORES -->
+  <div class="page" id="page-jugadores">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Jugadores</div>
+        <div class="page-subtitle">Todos los usuarios registrados</div>
+      </div>
+      <button class="refresh-btn" onclick="loadAll()">↻ Actualizar</button>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th>Nombre</th>
+            <th>Teléfono</th>
+            <th>Usuario casino</th>
+            <th>Estado</th>
+            <th>Registrado</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-jugadores"></tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<!-- MODAL DETALLE TRANSACCIÓN -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal">
+    <div class="modal-title">Detalle del comprobante</div>
+    <div class="modal-sub" id="modal-telefono"></div>
+
+    <img id="modal-img" class="img-preview" src="" alt="Comprobante" style="display:none">
+
+    <div class="ocr-text" id="modal-ocr"></div>
+
+    <div class="modal-field">
+      <span class="label">Monto detectado</span>
+      <span class="value" id="modal-monto"></span>
+    </div>
+    <div class="modal-field">
+      <span class="label">Estado actual</span>
+      <span class="value" id="modal-estado"></span>
+    </div>
+    <div class="modal-field">
+      <span class="label">Fecha</span>
+      <span class="value" id="modal-fecha"></span>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cerrar</button>
+      <button class="btn btn-sm btn-red" id="btn-rechazar" onclick="accionTransaccion('rechazado')">✗ Rechazar</button>
+      <button class="btn btn-sm btn-green" id="btn-aprobar" onclick="accionTransaccion('acreditado')">✓ Aprobar y acreditar</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+  // ── CONFIG ──────────────────────────────────────────────────────────────
+  // Cambiá esta URL por la URL de tu backend en Railway
+  const API = window.location.origin;
+
+  let currentTransaccion = null;
+
+  // ── NAVEGACIÓN ──────────────────────────────────────────────────────────
+  function showPage(name) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById('page-' + name).classList.add('active');
+    event.currentTarget.classList.add('active');
+  }
+
+  // ── HELPERS ─────────────────────────────────────────────────────────────
+  function fmt(n) {
+    if (!n && n !== 0) return '—';
+    return '$' + Number(n).toLocaleString('es-AR');
+  }
+
+  function fmtDate(d) {
+    if (!d) return '—';
+    return new Date(d).toLocaleString('es-AR', {
+      day: '2-digit', month: '2-digit', year: '2-digit',
+      hour: '2-digit', minute: '2-digit'
+    });
+  }
+
+  function pill(estado) {
+    const map = {
+      pendiente: 'pending',
+      revision_manual: 'manual',
+      procesando: 'pending',
+      acreditado: 'approved',
+      rechazado: 'rejected',
+    };
+    const labels = {
+      pendiente: 'Pendiente',
+      revision_manual: 'Revisar',
+      procesando: 'Procesando',
+      acreditado: 'Aprobado',
+      rechazado: 'Rechazado',
+    };
+    const cls = map[estado] || 'pending';
+    return `<span class="pill ${cls}">${labels[estado] || estado}</span>`;
+  }
+
+  function showToast(msg, type = 'success') {
+    const t = document.getElementById('toast');
+    t.textContent = (type === 'success' ? '✓ ' : '✗ ') + msg;
+    t.className = `toast ${type} show`;
+    setTimeout(() => t.classList.remove('show'), 3000);
+  }
+
+  // ── CARGAR DATOS ────────────────────────────────────────────────────────
+  async function loadAll() {
+    await Promise.all([loadTransacciones(), loadJugadores()]);
+  }
+
+  async function loadTransacciones() {
+    try {
+      const res = await fetch(API + '/transacciones');
+      const data = await res.json();
+
+      const aprobados = data.filter(t => t.estado === 'acreditado').length;
+      const pendientes = data.filter(t => ['pendiente','revision_manual','procesando'].includes(t.estado)).length;
+      const rechazados = data.filter(t => t.estado === 'rechazado').length;
+
+      document.getElementById('stat-aprobados').textContent = aprobados;
+      document.getElementById('stat-pendientes').textContent = pendientes;
+      document.getElementById('stat-rechazados').textContent = rechazados;
+      document.getElementById('badge-pendientes').textContent = pendientes;
+
+      // Dashboard — últimas 10
+      const tbody = document.getElementById('tbody-dashboard');
+      const ultimas = data.slice(0, 10);
+      tbody.innerHTML = ultimas.length ? ultimas.map(t => `
+        <tr>
+          <td class="mono">${t.telefono}</td>
+          <td><strong>${fmt(t.monto)}</strong></td>
+          <td>${pill(t.estado)}</td>
+          <td class="muted mono">${fmtDate(t.creadoEn)}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="openModal(${JSON.stringify(JSON.stringify(t))})">Ver</button></td>
+        </tr>
+      `).join('') : '<tr><td colspan="5"><div class="empty"><div class="icon">◎</div><p>Sin transacciones aún</p></div></td></tr>';
+
+      // Pendientes
+      const tbodyP = document.getElementById('tbody-pendientes');
+      const pend = data.filter(t => ['pendiente','revision_manual','procesando'].includes(t.estado));
+      tbodyP.innerHTML = pend.length ? pend.map(t => `
+        <tr>
+          <td class="mono">${t.telefono}</td>
+          <td><strong>${fmt(t.monto)}</strong></td>
+          <td class="muted mono">${fmtDate(t.creadoEn)}</td>
+          <td>
+            <div class="actions">
+              <button class="btn btn-sm btn-ghost" onclick="openModal(${JSON.stringify(JSON.stringify(t))})">Ver OCR</button>
+              <button class="btn btn-sm btn-red" onclick="accionDirecta('${t._id}', '${t.telefono}', ${t.monto}, 'rechazado')">✗ Rechazar</button>
+              <button class="btn btn-sm btn-green" onclick="accionDirecta('${t._id}', '${t.telefono}', ${t.monto}, 'acreditado')">✓ Aprobar</button>
+            </div>
+          </td>
+        </tr>
+      `).join('') : '<tr><td colspan="4"><div class="empty"><div class="icon">✓</div><p>No hay pendientes. Todo al día.</p></div></td></tr>';
+
+      // Todas
+      const tbodyA = document.getElementById('tbody-transacciones');
+      tbodyA.innerHTML = data.length ? data.map(t => `
+        <tr>
+          <td class="mono">${t.telefono}</td>
+          <td><strong>${fmt(t.monto)}</strong></td>
+          <td>${pill(t.estado)}</td>
+          <td class="muted mono">${fmtDate(t.creadoEn)}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="openModal(${JSON.stringify(JSON.stringify(t))})">Ver</button></td>
+        </tr>
+      `).join('') : '<tr><td colspan="5"><div class="empty"><div class="icon">◎</div><p>Sin transacciones aún</p></div></td></tr>';
+
+    } catch (e) {
+      console.error('Error cargando transacciones:', e);
+    }
+  }
+
+  async function loadJugadores() {
+    try {
+      const res = await fetch(API + '/jugadores');
+      const data = await res.json();
+
+      document.getElementById('stat-jugadores').textContent = data.length;
+
+      const tbody = document.getElementById('tbody-jugadores');
+      tbody.innerHTML = data.length ? data.map(j => `
+        <tr>
+          <td><strong>${j.nombre || '—'}</strong></td>
+          <td class="mono">${j.telefono}</td>
+          <td class="mono">${j.usuarioCasino || '—'}</td>
+          <td>${pill(j.estado === 'activo' ? 'acreditado' : 'pendiente')}</td>
+          <td class="muted mono">${fmtDate(j.creadoEn)}</td>
+        </tr>
+      `).join('') : '<tr><td colspan="5"><div class="empty"><div class="icon">◇</div><p>Sin jugadores aún</p></div></td></tr>';
+
+    } catch (e) {
+      console.error('Error cargando jugadores:', e);
+    }
+  }
+
+  // ── MODAL ────────────────────────────────────────────────────────────────
+  function openModal(jsonStr) {
+    const t = JSON.parse(jsonStr);
+    currentTransaccion = t;
+    document.getElementById('modal-telefono').textContent = 'Tel: ' + t.telefono;
+    document.getElementById('modal-ocr').textContent = t.textoOCR || 'Sin texto OCR disponible';
+    document.getElementById('modal-monto').textContent = fmt(t.monto);
+    document.getElementById('modal-estado').textContent = t.estado;
+    document.getElementById('modal-fecha').textContent = fmtDate(t.creadoEn);
+    document.getElementById('modal-overlay').classList.add('open');
+  }
+
+  function closeModal(e) {
+    if (!e || e.target === document.getElementById('modal-overlay')) {
+      document.getElementById('modal-overlay').classList.remove('open');
+      currentTransaccion = null;
+    }
+  }
+
+  // ── ACCIONES ─────────────────────────────────────────────────────────────
+  async function accionTransaccion(nuevoEstado) {
+    if (!currentTransaccion) return;
+    await accionDirecta(currentTransaccion._id, currentTransaccion.telefono, currentTransaccion.monto, nuevoEstado);
+    closeModal();
+  }
+
+  async function accionDirecta(id, telefono, monto, nuevoEstado) {
+    try {
+      if (nuevoEstado === 'acreditado') {
+        const res = await fetch(API + '/acreditar-manual', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ telefono, monto }),
+        });
+        const data = await res.json();
+        if (!data.exito) throw new Error(data.error);
+        showToast('Fichas acreditadas y jugador notificado');
+      } else {
+        await fetch(API + '/rechazar-transaccion', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, telefono }),
+        });
+        showToast('Transacción rechazada', 'error');
+      }
+      await loadAll();
+    } catch (e) {
+      showToast('Error: ' + e.message, 'error');
+    }
+  }
+
+  // ── INIT ─────────────────────────────────────────────────────────────────
+  loadAll();
+  setInterval(loadAll, 30000); // auto-refresh cada 30 seg
+</script>
+</body>
+</html>
