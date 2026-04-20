@@ -3,15 +3,17 @@ const express = require('express');
 const mongoose = require('mongoose');
 const vision = require('@google-cloud/vision');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
 const Anthropic = require('@anthropic-ai/sdk');
 const pino = require('pino');
 const path = require('path');
+const QRCode = require('qrcode');
+const fs = require('fs');
 
 const app = express();
 const port = process.env.PORT || 3001;
 app.use(express.json({ limit: '20mb' }));
 
+// ─── MONGODB ─────────────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -37,6 +39,7 @@ const transaccionSchema = new mongoose.Schema({
 });
 const Transaccion = mongoose.model('Transaccion', transaccionSchema);
 
+// ─── GOOGLE VISION OCR ───────────────────────────────────────────────────────
 let visionClient;
 try {
   const credentials = JSON.parse(process.env.OCR_CREDENTIALS_JSON);
@@ -51,13 +54,11 @@ async function extraerMontoDeComprobante(buffer) {
     const base64 = buffer.toString('base64');
     const [result] = await visionClient.textDetection({ image: { content: base64 } });
     const texto = result.textAnnotations.length ? result.textAnnotations[0].description : '';
-
     const patrones = [
       /\$\s*([\d.,]+)/g,
       /(?:monto|importe|total|transferencia|enviaste|recibiste)[:\s]*\$?\s*([\d.,]+)/gi,
       /(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?)/g,
     ];
-
     const montos = [];
     for (const patron of patrones) {
       let match;
@@ -66,10 +67,8 @@ async function extraerMontoDeComprobante(buffer) {
         if (num > 100 && num < 10000000) montos.push(num);
       }
     }
-
     const alias = (process.env.CBU_ALIAS || '').toLowerCase();
     const cbuVerificado = alias ? texto.toLowerCase().includes(alias) : false;
-
     return { texto, montoDetectado: montos.length > 0 ? Math.max(...montos) : null, cbuVerificado };
   } catch (err) {
     console.error('❌ Error OCR:', err.message);
@@ -77,6 +76,7 @@ async function extraerMontoDeComprobante(buffer) {
   }
 }
 
+// ─── ANTHROPIC ───────────────────────────────────────────────────────────────
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function procesarMensajeConIA(jugador, mensajeUsuario) {
@@ -98,14 +98,17 @@ Mensajes cortos, máximo 3 párrafos, 1-2 emojis. Respondé SOLO el mensaje para
     system: systemPrompt,
     messages: mensajes,
   });
-
   return response.content[0].text;
 }
 
+// ─── WHATSAPP CON BAILEYS ────────────────────────────────────────────────────
 let sock;
+let qrImageBase64 = null;
+let waConnected = false;
 
 async function conectarWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+  // Usar /tmp para la sesión (Render permite escritura ahí)
+  const { state, saveCreds } = await useMultiFileAuthState('/tmp/auth_info');
 
   sock = makeWASocket({
     auth: state,
@@ -117,13 +120,23 @@ async function conectarWhatsApp() {
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log('\n📱 Escanea este QR con tu WhatsApp:\n');
-      qrcode.generate(qr, { small: true });
+      console.log('📱 QR generado - visitá /qr para escanearlo');
+      // Convertir QR a imagen base64 para mostrarlo en la web
+      try {
+        qrImageBase64 = await QRCode.toDataURL(qr);
+      } catch(e) {
+        console.error('Error generando QR imagen:', e);
+      }
     }
     if (connection === 'close') {
+      waConnected = false;
+      qrImageBase64 = null;
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('Conexión cerrada. Reconectando:', shouldReconnect);
       if (shouldReconnect) setTimeout(conectarWhatsApp, 3000);
     } else if (connection === 'open') {
+      waConnected = true;
+      qrImageBase64 = null;
       console.log('✅ WhatsApp conectado');
     }
   });
@@ -170,6 +183,7 @@ async function conectarWhatsApp() {
               respuesta = `✅ Comprobante recibido por *$${Number(montoDetectado).toLocaleString('es-AR')}*. Estamos verificando y en minutos te confirmamos la acreditación ⏳`;
             }
           } catch (e) {
+            console.error('Error imagen:', e);
             respuesta = '❌ No pude procesar la imagen. ¿La podés mandar de nuevo?';
           }
           await sock.sendMessage(msg.key.remoteJid, { text: respuesta });
@@ -226,16 +240,51 @@ async function conectarWhatsApp() {
 
 conectarWhatsApp();
 
+// ─── ENDPOINTS ───────────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.send('🎰 Nebula Casino Bot funcionando'));
+
+// Página para escanear el QR
+app.get('/qr', (req, res) => {
+  if (waConnected) {
+    return res.send(`
+      <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white">
+        <h2 style="color:#22d87a">✅ WhatsApp conectado</h2>
+        <p>El bot está funcionando correctamente.</p>
+      </body></html>
+    `);
+  }
+  if (!qrImageBase64) {
+    return res.send(`
+      <html><head><meta http-equiv="refresh" content="3"></head>
+      <body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white">
+        <h2>⏳ Generando QR...</h2>
+        <p>Esta página se actualiza sola. Esperá unos segundos.</p>
+      </body></html>
+    `);
+  }
+  res.send(`
+    <html><head><meta http-equiv="refresh" content="30"></head>
+    <body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white">
+      <h2 style="color:#7c6dfa">📱 Escanea con WhatsApp</h2>
+      <p>Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo</p>
+      <img src="${qrImageBase64}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block"/>
+      <p style="color:#6b6b80;font-size:13px">El QR expira en 60 segundos. La página se actualiza sola.</p>
+    </body></html>
+  `);
+});
+
 app.get('/panel', (req, res) => res.sendFile(path.join(__dirname, 'panel.html')));
+
 app.get('/jugadores', async (req, res) => {
   const jugadores = await Jugador.find({}, '-historial').sort({ creadoEn: -1 });
   res.json(jugadores);
 });
+
 app.get('/transacciones', async (req, res) => {
   const trans = await Transaccion.find().sort({ creadoEn: -1 }).limit(100);
   res.json(trans);
 });
+
 app.post('/acreditar-manual', async (req, res) => {
   const { telefono, monto } = req.body;
   try {
@@ -244,6 +293,7 @@ app.post('/acreditar-manual', async (req, res) => {
     res.json({ exito: true });
   } catch (e) { res.status(500).json({ exito: false, error: e.message }); }
 });
+
 app.post('/rechazar-transaccion', async (req, res) => {
   const { id, telefono } = req.body;
   try {
