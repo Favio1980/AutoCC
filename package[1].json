@@ -1,0 +1,19 @@
+{
+  "name": "nebula-backend",
+  "version": "2.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.2.2",
+    "@google-cloud/vision": "^2.4.0",
+    "dotenv": "^16.0.3",
+    "whatsapp-web.js": "^1.23.0",
+    "qrcode-terminal": "^0.12.0",
+    "@anthropic-ai/sdk": "^0.24.0",
+    "axios": "^1.6.0",
+    "playwright": "^1.44.0"
+  }
+}
