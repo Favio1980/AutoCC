@@ -11,6 +11,7 @@
     "@google-cloud/vision": "^2.4.0",
     "dotenv": "^16.0.3",
     "@whiskeysockets/baileys": "^6.7.9",
+    "qrcode": "^1.5.3",
     "qrcode-terminal": "^0.12.0",
     "@anthropic-ai/sdk": "^0.24.0",
     "axios": "^1.6.0",
