@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ases del Norte — Panel de Control</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;700;800&display=swap');
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111111;
+    --border: #222222;
+    --green: #00ff88;
+    --red: #ff3355;
+    --yellow: #ffcc00;
+    --text: #e8e8e8;
+    --muted: #555;
+    --accent: #00ff88;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: -0.5px;
+  }
+
+  .logo span { color: var(--green); }
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 32px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tab {
+    padding: 14px 20px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .tab.active {
+    color: var(--green);
+    border-bottom-color: var(--green);
+  }
+
+  .tab:hover { color: var(--text); }
+
+  .content { padding: 32px; }
+
+  .section { display: none; }
+  .section.active { display: block; }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 3px; height: 100%;
+    background: var(--green);
+  }
+
+  .stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .stat-value {
+    font-family: 'Syne', sans-serif;
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--green);
+  }
+
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .table-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .table-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--muted);
+  }
+
+  .refresh-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 6px 12px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .refresh-btn:hover { border-color: var(--green); color: var(--green); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  thead th {
+    padding: 12px 16px;
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    font-weight: 400;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+  td { padding: 14px 16px; vertical-align: middle; }
+
+  .badge {
+    display: inline-block;
+    padding: 3px 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border: 1px solid;
+  }
+
+  .badge-pending { color: var(--yellow); border-color: var(--yellow); background: rgba(255,204,0,0.08); }
+  .badge-ok { color: var(--green); border-color: var(--green); background: rgba(0,255,136,0.08); }
+  .badge-fail { color: var(--red); border-color: var(--red); background: rgba(255,51,85,0.08); }
+  .badge-new { color: #888; border-color: #333; background: rgba(255,255,255,0.03); }
+
+  .actions { display: flex; gap: 8px; }
+
+  .btn-green {
+    padding: 6px 14px;
+    background: rgba(0,255,136,0.1);
+    border: 1px solid var(--green);
+    color: var(--green);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .btn-green:hover { background: rgba(0,255,136,0.25); }
+
+  .btn-red {
+    padding: 6px 14px;
+    background: rgba(255,51,85,0.1);
+    border: 1px solid var(--red);
+    color: var(--red);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .btn-red:hover { background: rgba(255,51,85,0.25); }
+
+  .comprobante-thumb {
+    width: 48px; height: 48px;
+    object-fit: cover;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: transform 0.2s;
+  }
+
+  .comprobante-thumb:hover { transform: scale(1.1); }
+
+  .no-img {
+    width: 48px; height: 48px;
+    background: var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .empty {
+    text-align: center;
+    padding: 60px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 20px;
+    font-size: 13px;
+    z-index: 1000;
+    transform: translateY(100px);
+    transition: transform 0.3s;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .toast.show { transform: translateY(0); }
+  .toast.success { background: var(--surface); border: 1px solid var(--green); color: var(--green); }
+  .toast.error { background: var(--surface); border: 1px solid var(--red); color: var(--red); }
+
+  /* Modal comprobante */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 24px;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: auto;
+  }
+
+  .modal img { max-width: 100%; max-height: 70vh; }
+  .modal-close {
+    display: block;
+    margin-top: 16px;
+    text-align: right;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .modal-close:hover { color: var(--text); }
+
+  .monto-input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    padding: 6px 10px;
+    width: 100px;
+  }
+
+  .monto-input:focus { outline: none; border-color: var(--green); }
+
+  .telegram-id { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">ASES <span>DEL NORTE</span> — PANEL</div>
+  <div class="status">
+    <div class="dot"></div>
+    <span id="last-update">Actualizando...</span>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="showTab('pendientes')">⏳ Pendientes</button>
+  <button class="tab" onclick="showTab('historial')">📋 Historial</button>
+  <button class="tab" onclick="showTab('jugadores')">👥 Jugadores</button>
+</div>
+
+<div class="content">
+
+  <!-- PENDIENTES -->
+  <div class="section active" id="tab-pendientes">
+    <div class="stats" id="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Pendientes</div>
+        <div class="stat-value" id="count-pending">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Acreditados hoy</div>
+        <div class="stat-value" id="count-today">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total jugadores</div>
+        <div class="stat-value" id="count-players">—</div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-header">
+        <span class="table-title">Comprobantes pendientes de revisión</span>
+        <button class="refresh-btn" onclick="cargarDatos()">↻ Actualizar</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Comprobante</th>
+            <th>Jugador</th>
+            <th>Telegram</th>
+            <th>Monto declarado</th>
+            <th>Hora</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="tabla-pendientes">
+          <tr><td colspan="6" class="empty">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- HISTORIAL -->
+  <div class="section" id="tab-historial">
+    <div class="table-wrap">
+      <div class="table-header">
+        <span class="table-title">Todas las transacciones</span>
+        <button class="refresh-btn" onclick="cargarHistorial()">↻ Actualizar</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Comprobante</th>
+            <th>Jugador</th>
+            <th>Monto</th>
+            <th>Estado</th>
+            <th>Fecha</th>
+          </tr>
+        </thead>
+        <tbody id="tabla-historial">
+          <tr><td colspan="5" class="empty">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- JUGADORES -->
+  <div class="section" id="tab-jugadores">
+    <div class="table-wrap">
+      <div class="table-header">
+        <span class="table-title">Jugadores registrados</span>
+        <button class="refresh-btn" onclick="cargarJugadores()">↻ Actualizar</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Nombre</th>
+            <th>Usuario Casino</th>
+            <th>Telegram ID</th>
+            <th>Estado</th>
+            <th>Registro</th>
+          </tr>
+        </thead>
+        <tbody id="tabla-jugadores">
+          <tr><td colspan="5" class="empty">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Modal imagen -->
+<div class="modal-overlay" id="modal-overlay" onclick="cerrarModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <img id="modal-img" src="" alt="Comprobante">
+    <span class="modal-close" onclick="cerrarModal()">✕ Cerrar</span>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'pendientes') cargarDatos();
+  if (name === 'historial') cargarHistorial();
+  if (name === 'jugadores') cargarJugadores();
+}
+
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast ' + type + ' show';
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+function verComprobante(url) {
+  document.getElementById('modal-img').src = url;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function cerrarModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+function formatFecha(d) {
+  const f = new Date(d);
+  return f.toLocaleDateString('es-AR') + ' ' + f.toLocaleTimeString('es-AR', {hour:'2-digit', minute:'2-digit'});
+}
+
+function formatMonto(m) {
+  if (!m) return '—';
+  return '$' + Number(m).toLocaleString('es-AR');
+}
+
+async function cargarDatos() {
+  try {
+    const [trans, jugadores] = await Promise.all([
+      fetch('/transacciones').then(r => r.json()),
+      fetch('/jugadores').then(r => r.json())
+    ]);
+
+    const pendientes = trans.filter(t => t.estado === 'revision_manual');
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const acreditadosHoy = trans.filter(t => t.estado === 'acreditado' && new Date(t.creadoEn) >= hoy).length;
+
+    document.getElementById('count-pending').textContent = pendientes.length;
+    document.getElementById('count-today').textContent = acreditadosHoy;
+    document.getElementById('count-players').textContent = jugadores.length;
+    document.getElementById('last-update').textContent = 'Actualizado ' + new Date().toLocaleTimeString('es-AR');
+
+    const jugMap = {};
+    jugadores.forEach(j => { jugMap[j.telegramId] = j; });
+
+    const tbody = document.getElementById('tabla-pendientes');
+    if (pendientes.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">Sin pendientes ✓</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = pendientes.map(t => {
+      const jug = jugMap[t.telegramId] || {};
+      const imgHtml = t.imagenUrl
+        ? `<img class="comprobante-thumb" src="${t.imagenUrl}" onclick="verComprobante('${t.imagenUrl}')">`
+        : `<div class="no-img">SIN IMG</div>`;
+
+      return `<tr>
+        <td>${imgHtml}</td>
+        <td>
+          <div>${jug.nombre || '—'}</div>
+          <div style="color:var(--muted);font-size:11px">${jug.usuarioCasino || 'sin cuenta'}</div>
+        </td>
+        <td class="telegram-id">${t.telegramId || '—'}</td>
+        <td>
+          <input class="monto-input" id="monto-${t._id}" value="${t.monto || ''}" placeholder="Monto">
+        </td>
+        <td style="color:var(--muted);font-size:12px">${formatFecha(t.creadoEn)}</td>
+        <td>
+          <div class="actions">
+            <button class="btn-green" onclick="acreditar('${t._id}', '${t.telegramId}', '${jug.usuarioCasino || ''}')">✓ Acreditar</button>
+            <button class="btn-red" onclick="rechazar('${t._id}', '${t.telegramId}')">✕ Rechazar</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    console.error(e);
+    toast('Error cargando datos', 'error');
+  }
+}
+
+async function acreditar(id, telegramId, usuarioCasino) {
+  const montoEl = document.getElementById('monto-' + id);
+  const monto = montoEl?.value;
+  if (!monto || isNaN(monto) || Number(monto) < 1) {
+    toast('Ingresá un monto válido', 'error');
+    montoEl?.focus();
+    return;
+  }
+  if (!usuarioCasino) {
+    toast('El jugador no tiene usuario en el casino', 'error');
+    return;
+  }
+
+  try {
+    const r = await fetch('/acreditar-manual', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id, telegramId, usuarioCasino, monto: Number(monto) })
+    });
+    const data = await r.json();
+    if (data.exito) {
+      toast('✓ Fichas acreditadas: ' + formatMonto(monto));
+      setTimeout(cargarDatos, 1000);
+    } else {
+      toast('Error al acreditar: ' + (data.error || ''), 'error');
+    }
+  } catch(e) {
+    toast('Error de conexión', 'error');
+  }
+}
+
+async function rechazar(id, telegramId) {
+  if (!confirm('¿Rechazar este comprobante?')) return;
+  try {
+    const r = await fetch('/rechazar-transaccion', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id, telegramId })
+    });
+    const data = await r.json();
+    if (data.exito) {
+      toast('Comprobante rechazado', 'error');
+      setTimeout(cargarDatos, 1000);
+    }
+  } catch(e) {
+    toast('Error de conexión', 'error');
+  }
+}
+
+async function cargarHistorial() {
+  try {
+    const [trans, jugadores] = await Promise.all([
+      fetch('/transacciones').then(r => r.json()),
+      fetch('/jugadores').then(r => r.json())
+    ]);
+    const jugMap = {};
+    jugadores.forEach(j => { jugMap[j.telegramId] = j; });
+
+    const tbody = document.getElementById('tabla-historial');
+    if (trans.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">Sin transacciones</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = trans.map(t => {
+      const jug = jugMap[t.telegramId] || {};
+      const badgeClass = t.estado === 'acreditado' ? 'badge-ok' : t.estado === 'rechazado' ? 'badge-fail' : t.estado === 'revision_manual' ? 'badge-pending' : 'badge-new';
+      const badgeText = t.estado === 'acreditado' ? 'Acreditado' : t.estado === 'rechazado' ? 'Rechazado' : t.estado === 'revision_manual' ? 'Pendiente' : t.estado;
+      const imgHtml = t.imagenUrl ? `<img class="comprobante-thumb" src="${t.imagenUrl}" onclick="verComprobante('${t.imagenUrl}')">` : '<div class="no-img">—</div>';
+
+      return `<tr>
+        <td>${imgHtml}</td>
+        <td>
+          <div>${jug.nombre || '—'}</div>
+          <div style="color:var(--muted);font-size:11px">${jug.usuarioCasino || '—'}</div>
+        </td>
+        <td>${formatMonto(t.monto)}</td>
+        <td><span class="badge ${badgeClass}">${badgeText}</span></td>
+        <td style="color:var(--muted);font-size:12px">${formatFecha(t.creadoEn)}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    toast('Error cargando historial', 'error');
+  }
+}
+
+async function cargarJugadores() {
+  try {
+    const jugadores = await fetch('/jugadores').then(r => r.json());
+    const tbody = document.getElementById('tabla-jugadores');
+    if (jugadores.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">Sin jugadores</td></tr>';
+      return;
+    }
+    const estadoMap = { nuevo: 'badge-new', esperando_nombre: 'badge-pending', creando_cuenta: 'badge-pending', activo: 'badge-ok', esperando_comprobante: 'badge-pending' };
+
+    tbody.innerHTML = jugadores.map(j => `<tr>
+      <td>${j.nombre || '—'}</td>
+      <td style="color:var(--green)">${j.usuarioCasino || '—'}</td>
+      <td class="telegram-id">${j.telegramId || '—'}</td>
+      <td><span class="badge ${estadoMap[j.estado] || 'badge-new'}">${j.estado}</span></td>
+      <td style="color:var(--muted);font-size:12px">${formatFecha(j.creadoEn)}</td>
+    </tr>`).join('');
+  } catch(e) {
+    toast('Error cargando jugadores', 'error');
+  }
+}
+
+// Cargar al inicio
+cargarDatos();
+setInterval(cargarDatos, 30000);
+</script>
+</body>
+</html>
