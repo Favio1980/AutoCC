@@ -409,32 +409,3 @@ setInterval(() => {
 </script>
 </body>
 </html>
-EOF
-echo "OK"
-Salida
-
-OK
-
-Presented 2 files
-Listo
-Descargá ambos archivos y subílos a GitHub. Después en MobaXterm:
-
-cd /root/AutoCC && git fetch origin && git reset --hard origin/main && npm install form-data && pm2 restart nebula-backend --update-env
-También agregá la variable de retiro mínimo al env.txt:
-
-echo "MONTO_MINIMO_RETIRO=5000" >> /root/AutoCC/env.txt
-Lo que hace el sistema de retiros:
-
-Jugador escribe "quiero retirar" → bot pide monto, CBU/alias y titular
-Se crea solicitud en MongoDB + te llega email
-Panel → pestaña "Retiros" → botón Aprobar → Playwright descuenta fichas automáticamente → jugador recibe mensaje
-Aparece botón "Subir comprobante" → subís la imagen/PDF de tu transferencia → se envía al jugador por Telegram
-Estado final: Pagado
-
-Server
-JS 
-
-Panel
-Código · HTML 
-
-
