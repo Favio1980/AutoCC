@@ -6,12 +6,14 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const Anthropic = require('@anthropic-ai/sdk');
+const { chromium } = require('playwright');
 const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3001;
 app.use(express.json({ limit: '20mb' }));
 
+// ─── MONGODB ─────────────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -37,6 +39,22 @@ const transaccionSchema = new mongoose.Schema({
 });
 const Transaccion = mongoose.model('Transaccion', transaccionSchema);
 
+const contadorSchema = new mongoose.Schema({
+  nombre: { type: String, unique: true },
+  valor:  { type: Number, default: 0 },
+});
+const Contador = mongoose.model('Contador', contadorSchema);
+
+async function obtenerSiguienteNumero() {
+  const contador = await Contador.findOneAndUpdate(
+    { nombre: 'jugadores' },
+    { $inc: { valor: 1 } },
+    { new: true, upsert: true }
+  );
+  return contador.valor;
+}
+
+// ─── GOOGLE VISION OCR ───────────────────────────────────────────────────────
 let visionClient;
 try {
   const credentials = JSON.parse(process.env.OCR_CREDENTIALS_JSON);
@@ -72,15 +90,18 @@ async function extraerMontoDeComprobante(base64Image) {
   }
 }
 
+// ─── ANTHROPIC ───────────────────────────────────────────────────────────────
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function procesarMensajeConIA(jugador, mensajeUsuario) {
-  const systemPrompt = `Sos el asistente virtual de un casino online argentino. Tu nombre es Nova.
-Atendés jugadores por WhatsApp en español argentino informal (tuteo).
+  const systemPrompt = `Sos un operador humano de un casino online argentino. Tu nombre es Nova.
+Atendés jugadores por WhatsApp. Sos joven, informal, amigable. Usás español rioplatense.
 Alias para transferencias: ${process.env.CBU_ALIAS}
 Monto mínimo: $${process.env.MONTO_MINIMO || 1000}
 Jugador: ${jugador.nombre || 'desconocido'}, estado: ${jugador.estado}
-Mensajes cortos, máximo 3 párrafos, 1-2 emojis. Respondé SOLO el mensaje para el jugador.`;
+IMPORTANTE: Escribí como una persona real. Frases cortas. Máximo 2-3 oraciones. 0-1 emojis.
+Usá palabras como: dale, joya, re, obvio, buenas, che.
+Respondé SOLO el mensaje para el jugador, sin explicaciones.`;
 
   const mensajes = [
     ...jugador.historial.map(h => ({ role: h.rol, content: h.contenido })),
@@ -89,28 +110,157 @@ Mensajes cortos, máximo 3 párrafos, 1-2 emojis. Respondé SOLO el mensaje para
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 500,
+    max_tokens: 300,
     system: systemPrompt,
     messages: mensajes,
   });
   return response.content[0].text;
 }
 
+// ─── HELPERS HUMANOS ─────────────────────────────────────────────────────────
+function delay(minSeg, maxSeg) {
+  const ms = (Math.random() * (maxSeg - minSeg) + minSeg) * 1000;
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function tiempoEscritura(texto) {
+  const palabras = texto.split(' ').length;
+  const segundos = Math.min(Math.max(palabras * 0.3, 1.5), 6);
+  return segundos * 1000;
+}
+
+async function enviarMensajeHumano(chat, texto) {
+  await delay(1.5, 4);
+  try {
+    const chatObj = await waClient.getChatById(chat);
+    await chatObj.sendStateTyping();
+  } catch(e) {}
+  await new Promise(resolve => setTimeout(resolve, tiempoEscritura(texto)));
+  await waClient.sendMessage(chat, texto);
+}
+
+// ─── PLAYWRIGHT: CREAR USUARIO ───────────────────────────────────────────────
+async function crearUsuarioEnCasino(nombre, numero) {
+  const usuario = `Zzz${nombre}${numero}`;
+  const contrasenia = '123';
+  const email = `${usuario.toLowerCase()}@gmail.com`;
+
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: '/usr/bin/google-chrome',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+      headless: true,
+    });
+    const page = await browser.newPage();
+
+    await page.goto('https://asesdelnorte.com/NewAdmin/', { waitUntil: 'networkidle' });
+    await page.fill('input[name="idusuario"]', process.env.CASINO_ADMIN_USER);
+    await page.fill('input[name="contrasenia"]', process.env.CASINO_ADMIN_PASS);
+    await page.click('input[type="image"]');
+    await page.waitForTimeout(3000);
+
+    // Manejar popups de bienvenida
+    for (let i = 0; i < 3; i++) {
+      try {
+        const continuar = await page.$('a:has-text("CONTINUAR"), a:has-text("HOME")');
+        if (continuar) { await continuar.click(); await page.waitForTimeout(1000); }
+      } catch(e) {}
+    }
+
+    await page.goto('https://asesdelnorte.com/NewAdmin/RegistroJugador.php', { waitUntil: 'networkidle' });
+    await page.waitForTimeout(2000);
+
+    await page.fill('input[name="nombre"]', nombre);
+    await page.fill('input[name="apellido"]', 'N');
+    await page.fill('input[name="idusuario"]', usuario);
+    await page.fill('input[name="contrasenia"]', contrasenia);
+    await page.fill('input[name="contrasenia2"]', contrasenia);
+    await page.fill('input[name="email"]', email);
+
+    await page.click('input[type="image"]');
+    await page.waitForTimeout(3000);
+
+    const contenido = await page.content();
+    const exito = contenido.toLowerCase().includes('creado') || contenido.toLowerCase().includes('xito');
+
+    return { exito, usuario, contrasenia };
+  } catch (err) {
+    console.error('❌ Error creando usuario:', err.message);
+    return { exito: false, error: err.message };
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+// ─── PLAYWRIGHT: ACREDITAR FICHAS ────────────────────────────────────────────
+async function acreditarFichas(usuarioCasino, monto) {
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: '/usr/bin/google-chrome',
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+      headless: true,
+    });
+    const page = await browser.newPage();
+
+    await page.goto('https://asesdelnorte.com/NewAdmin/', { waitUntil: 'networkidle' });
+    await page.fill('input[name="idusuario"]', process.env.CASINO_ADMIN_USER);
+    await page.fill('input[name="contrasenia"]', process.env.CASINO_ADMIN_PASS);
+    await page.click('input[type="image"]');
+    await page.waitForTimeout(3000);
+
+    // Manejar popups
+    for (let i = 0; i < 3; i++) {
+      try {
+        const continuar = await page.$('a:has-text("CONTINUAR"), a:has-text("HOME")');
+        if (continuar) { await continuar.click(); await page.waitForTimeout(1000); }
+      } catch(e) {}
+    }
+
+    // Ir a la página del jugador
+    await page.goto(`https://asesdelnorte.com/NewAdmin/Jugadores.php?usr=${usuarioCasino}`, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(2000);
+
+    // Clickear Cargar Saldo en el iframe
+    const frame = page.frames().find(f => f.url().includes('Jugadores') || f.url().includes('jugador'));
+    if (frame) {
+      await frame.click('text=Cargar');
+    } else {
+      await page.click('text=Cargar');
+    }
+    await page.waitForTimeout(2000);
+
+    // Completar el popup de carga
+    const cargarFrame = page.frames().find(f => f.url().includes('carga-jugador'));
+    if (cargarFrame) {
+      await cargarFrame.fill('input[name="importe"]', String(monto));
+      await cargarFrame.click('input[type="image"]');
+    }
+    await page.waitForTimeout(2000);
+
+    return { exito: true };
+  } catch (err) {
+    console.error('❌ Error acreditando fichas:', err.message);
+    return { exito: false, error: err.message };
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+// ─── WHATSAPP ─────────────────────────────────────────────────────────────────
 let qrImageBase64 = null;
 let waConnected = false;
 
 const waClient = new Client({
   authStrategy: new LocalAuth({ dataPath: '/root/.wwebjs_auth' }),
   puppeteer: {
-    executablePath: '/usr/bin/chromium-browser',
+    executablePath: '/usr/bin/google-chrome',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
     ],
   },
 });
@@ -118,11 +268,7 @@ const waClient = new Client({
 waClient.on('qr', async qr => {
   console.log('📱 QR generado - visitá /qr para escanearlo');
   qrcode.generate(qr, { small: true });
-  try {
-    qrImageBase64 = await QRCode.toDataURL(qr);
-  } catch(e) {
-    console.error('Error generando QR imagen:', e);
-  }
+  try { qrImageBase64 = await QRCode.toDataURL(qr); } catch(e) {}
 });
 
 waClient.on('ready', () => {
@@ -146,62 +292,103 @@ waClient.on('message', async msg => {
 
     let respuesta = '';
 
+    // ── Comprobante ───────────────────────────────────────────────────────
     if (msg.hasMedia && jugador.estado === 'esperando_comprobante') {
-      await waClient.sendMessage(msg.from, '🔍 Analizando tu comprobante...');
+      await delay(2, 4);
+      await waClient.sendMessage(msg.from, '👀 vi el comprobante, lo estoy revisando...');
+
       try {
         const media = await msg.downloadMedia();
         const { montoDetectado, cbuVerificado, texto } = await extraerMontoDeComprobante(media.data);
         const transaccion = await Transaccion.create({ telefono, monto: montoDetectado, textoOCR: texto, estado: 'revision_manual' });
 
         if (!montoDetectado) {
-          respuesta = '❌ No pude detectar el monto. ¿Podés mandar una foto más clara?';
+          await delay(2, 3);
+          respuesta = 'mmm no pude leer bien el comprobante, lo podés mandar de nuevo con mejor calidad?';
           await transaccion.updateOne({ estado: 'rechazado' });
         } else if (!cbuVerificado) {
-          respuesta = `⚠️ No veo transferencia a nuestro alias *${process.env.CBU_ALIAS}*. ¿Verificás que hayas transferido al alias correcto?`;
+          await delay(2, 3);
+          respuesta = `che, no veo que la transferencia sea a nuestro alias *${process.env.CBU_ALIAS}* 🤔 revisá que hayas mandado al alias correcto`;
           await transaccion.updateOne({ estado: 'rechazado' });
         } else {
-          const operador = process.env.OPERADOR_TELEFONO;
-          if (operador) {
-            await waClient.sendMessage(`${operador}@c.us`, `🔔 *DEPÓSITO PARA ACREDITAR*\n\n👤 ${jugador.nombre || telefono}\n📱 ${telefono}\n🎰 Usuario: ${jugador.usuarioCasino || 'sin cuenta'}\n💰 Monto: $${Number(montoDetectado).toLocaleString('es-AR')}\n\nAcreditá en el casino y confirmá desde el panel.`);
+          await waClient.sendMessage(msg.from, `joya! comprobante recibido por *$${Number(montoDetectado).toLocaleString('es-AR')}* ✅ acreditando las fichas...`);
+
+          const resultado = await acreditarFichas(jugador.usuarioCasino, montoDetectado);
+
+          if (resultado.exito) {
+            await transaccion.updateOne({ estado: 'acreditado' });
+            jugador.estado = 'activo';
+            await jugador.save();
+            respuesta = `listo! te acredité *$${Number(montoDetectado).toLocaleString('es-AR')}* en tu cuenta 🎰 ya podés jugar!`;
+          } else {
+            const operador = process.env.OPERADOR_TELEFONO;
+            if (operador) {
+              await waClient.sendMessage(`${operador}@c.us`,
+                `🔔 *DEPÓSITO PARA ACREDITAR MANUAL*\n\n👤 ${jugador.nombre}\n📱 ${telefono}\n🎰 Usuario: ${jugador.usuarioCasino}\n💰 Monto: $${Number(montoDetectado).toLocaleString('es-AR')}\n\n⚠️ El robot falló, acreditá manualmente.`
+              );
+            }
+            respuesta = `recibí el comprobante por *$${Number(montoDetectado).toLocaleString('es-AR')}* ✅ en unos minutos te confirmamos la acreditación`;
           }
-          jugador.estado = 'activo';
-          await jugador.save();
-          respuesta = `✅ Comprobante recibido por *$${Number(montoDetectado).toLocaleString('es-AR')}*. Estamos verificando y en minutos te confirmamos la acreditación ⏳`;
         }
       } catch(e) {
-        respuesta = '❌ No pude procesar la imagen. ¿La podés mandar de nuevo?';
+        console.error('Error imagen:', e);
+        respuesta = 'no pude abrir la imagen, la podés mandar de nuevo?';
       }
-      await waClient.sendMessage(msg.from, respuesta);
+
+      await enviarMensajeHumano(msg.from, respuesta);
       return;
     }
 
+    // ── Texto ─────────────────────────────────────────────────────────────
     const texto = msg.body?.trim() || '';
     if (!texto) return;
 
-    if (jugador.estado === 'nuevo' && texto.match(/registr|cuenta|crear|quiero jugar|empezar|hola|buenas|info/i)) {
+    if (jugador.estado === 'nuevo' && texto.match(/registr|cuenta|crear|quiero jugar|empezar|hola|buenas|info|buenos/i)) {
       jugador.estado = 'esperando_nombre';
       await jugador.save();
-      respuesta = '¡Hola! Bienvenido 🎰 Para crear tu cuenta necesito tu nombre. ¿Cómo te llamás?';
+      const saludos = [
+        'hola! bienvenido 🎰 cómo te llamás para crear tu cuenta?',
+        'buenas! para registrarte necesito tu nombre nomás, cómo te llamás?',
+        'hola! para abrirte la cuenta decime tu nombre',
+      ];
+      respuesta = saludos[Math.floor(Math.random() * saludos.length)];
 
     } else if (jugador.estado === 'esperando_nombre') {
       const nombre = texto.replace(/[^a-záéíóúñA-ZÁÉÍÓÚÑ\s]/g, '').trim();
       if (nombre.length < 2) {
-        respuesta = 'No entendí tu nombre. ¿Me lo podés escribir de nuevo?';
+        respuesta = 'no entendí bien el nombre, me lo repetís?';
       } else {
         jugador.nombre = nombre;
-        jugador.estado = 'activo';
+        jugador.estado = 'creando_cuenta';
         await jugador.save();
-        const operador = process.env.OPERADOR_TELEFONO;
-        if (operador) {
-          await waClient.sendMessage(`${operador}@c.us`, `🆕 *NUEVO JUGADOR*\n\n👤 Nombre: ${nombre}\n📱 Tel: ${telefono}\n\nCreá la cuenta en el casino.`);
+
+        await enviarMensajeHumano(msg.from, `perfecto ${nombre}! ya te estoy creando la cuenta, dame un segundo... 🎰`);
+
+        const numero = await obtenerSiguienteNumero();
+        const resultado = await crearUsuarioEnCasino(nombre, numero);
+
+        if (resultado.exito) {
+          jugador.usuarioCasino = resultado.usuario;
+          jugador.estado = 'activo';
+          await jugador.save();
+          respuesta = `listo! tu cuenta está creada 🎉\n\n👤 Usuario: *${resultado.usuario}*\n🔑 Contraseña: *${resultado.contrasenia}*\n\n🌐 Entrá en: asesdelnorte.com\n\nPara cargar fichas transferís al alias *${process.env.CBU_ALIAS}* y me mandás el comprobante 📸`;
+        } else {
+          jugador.estado = 'activo';
+          await jugador.save();
+          const operador = process.env.OPERADOR_TELEFONO;
+          if (operador) {
+            await waClient.sendMessage(`${operador}@c.us`,
+              `🆕 *NUEVO JUGADOR - CREAR MANUAL*\n\n👤 Nombre: ${nombre}\n📱 Tel: ${telefono}\n⚠️ El robot falló, creá la cuenta manualmente.`
+            );
+          }
+          respuesta = `listo ${nombre}! en un momento te mandamos tus datos de acceso 🎰`;
         }
-        respuesta = `¡Perfecto, ${nombre}! 🎉 Tu cuenta está siendo creada. En unos minutos te mandamos tus datos de acceso.\n\n¿Querés saber cómo hacer tu primer depósito?`;
       }
 
-    } else if (texto.match(/deposit|cargar|fichas|pagar|transferi|quiero cargar/i)) {
+    } else if (texto.match(/deposit|cargar|fichas|pagar|transferi|quiero cargar|cómo cargo|como cargo/i)) {
       jugador.estado = 'esperando_comprobante';
       await jugador.save();
-      respuesta = `💳 Para depositar transferí al alias:\n\n*${process.env.CBU_ALIAS}*\n\nMínimo: $${Number(process.env.MONTO_MINIMO || 1000).toLocaleString('es-AR')}\n\nCuando hagas la transferencia mandame el comprobante 📸`;
+      respuesta = `dale! para cargar transferís al alias:\n\n*${process.env.CBU_ALIAS}*\n\nmínimo $${Number(process.env.MONTO_MINIMO || 1000).toLocaleString('es-AR')} - cuando hagas la transf mandame el comprobante acá 📸`;
 
     } else {
       jugador.historial.push({ rol: 'user', contenido: texto });
@@ -211,26 +398,27 @@ waClient.on('message', async msg => {
       await jugador.save();
     }
 
-    if (respuesta) await waClient.sendMessage(msg.from, respuesta);
+    await enviarMensajeHumano(msg.from, respuesta);
 
   } catch (err) {
     console.error('❌ Error:', err);
-    await waClient.sendMessage(msg.from, '⚠️ Error técnico. Intentá de nuevo.');
+    await waClient.sendMessage(msg.from, 'perdón, tuve un problema técnico. lo intentás de nuevo?');
   }
 });
 
 waClient.initialize();
 
+// ─── ENDPOINTS ────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => res.send('🎰 Nebula Casino Bot funcionando'));
 
 app.get('/qr', (req, res) => {
   if (waConnected) {
-    return res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2 style="color:#22d87a">✅ WhatsApp conectado</h2><p>El bot está funcionando.</p></body></html>`);
+    return res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2 style="color:#22d87a">✅ WhatsApp conectado</h2></body></html>`);
   }
   if (!qrImageBase64) {
     return res.send(`<html><head><meta http-equiv="refresh" content="3"></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2>⏳ Generando QR...</h2><p>Esta página se actualiza sola.</p></body></html>`);
   }
-  res.send(`<html><head><meta http-equiv="refresh" content="30"></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2 style="color:#7c6dfa">📱 Escanea con WhatsApp</h2><p>Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo</p><img src="${qrImageBase64}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block"/><p style="color:#6b6b80;font-size:13px">El QR expira en 60 segundos.</p></body></html>`);
+  res.send(`<html><head><meta http-equiv="refresh" content="30"></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2 style="color:#7c6dfa">📱 Escanea con WhatsApp</h2><p>Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo</p><img src="${qrImageBase64}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block"/></body></html>`);
 });
 
 app.get('/panel', (req, res) => res.sendFile(path.join(__dirname, 'panel.html')));
@@ -248,8 +436,14 @@ app.get('/transacciones', async (req, res) => {
 app.post('/acreditar-manual', async (req, res) => {
   const { telefono, monto } = req.body;
   try {
+    const jugador = await Jugador.findOne({ telefono });
     await Transaccion.findOneAndUpdate({ telefono, estado: 'revision_manual' }, { estado: 'acreditado' }, { sort: { creadoEn: -1 } });
-    await waClient.sendMessage(`${telefono}@c.us`, `✅ ¡Fichas acreditadas! Se cargaron *$${Number(monto).toLocaleString('es-AR')}* en tu cuenta. ¡Buena suerte! 🎰`);
+    if (jugador) {
+      const resultado = await acreditarFichas(jugador.usuarioCasino, monto);
+      if (resultado.exito) {
+        await waClient.sendMessage(`${telefono}@c.us`, `listo! te acredité *$${Number(monto).toLocaleString('es-AR')}* en la cuenta 🎰 buena suerte!`);
+      }
+    }
     res.json({ exito: true });
   } catch (e) { res.status(500).json({ exito: false, error: e.message }); }
 });
@@ -258,7 +452,7 @@ app.post('/rechazar-transaccion', async (req, res) => {
   const { id, telefono } = req.body;
   try {
     await Transaccion.findByIdAndUpdate(id, { estado: 'rechazado' });
-    await waClient.sendMessage(`${telefono}@c.us`, '❌ Tu comprobante fue rechazado. Si creés que es un error escribinos.');
+    await waClient.sendMessage(`${telefono}@c.us`, 'che, el comprobante no lo pudimos verificar. si crees que es un error escribinos y lo vemos');
     res.json({ exito: true });
   } catch (e) { res.status(500).json({ exito: false, error: e.message }); }
 });
