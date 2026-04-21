@@ -8,13 +8,16 @@ const axios = require('axios');
 
 const app = express();
 const port = process.env.PORT || 3001;
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
+
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 // ─── MONGODB ─────────────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URI).then(() => console.log('✅ MongoDB conectado')).catch(err => console.error('❌ MongoDB error:', err));
 
 const jugadorSchema = new mongoose.Schema({
-  telefono:      { type: String, unique: true },
+  telegramId:    { type: String, unique: true },
   nombre:        String,
   usuarioCasino: String,
   estado:        { type: String, default: 'nuevo' },
@@ -24,11 +27,11 @@ const jugadorSchema = new mongoose.Schema({
 const Jugador = mongoose.model('Jugador', jugadorSchema);
 
 const transaccionSchema = new mongoose.Schema({
-  telefono: String,
-  monto:    Number,
-  estado:   { type: String, default: 'pendiente' },
-  textoOCR: String,
-  creadoEn: { type: Date, default: Date.now },
+  telegramId: String,
+  monto:      Number,
+  estado:     { type: String, default: 'pendiente' },
+  textoOCR:   String,
+  creadoEn:   { type: Date, default: Date.now },
 });
 const Transaccion = mongoose.model('Transaccion', transaccionSchema);
 
@@ -76,18 +79,15 @@ Frases cortas. Máximo 2-3 oraciones. 0-1 emojis. Palabras como dale, joya, che,
   return r.content[0].text;
 }
 
-// ─── WHAPIFY API ──────────────────────────────────────────────────────────────
-async function enviarMensajeWhapify(userId, mensaje) {
+// ─── TELEGRAM API ─────────────────────────────────────────────────────────────
+async function enviarMensaje(chatId, texto) {
   try {
-    await axios.post('https://ap.whapify.ai/api/v1/send-message', {
-      user_id: userId,
-      message: mensaje
-    }, {
-      headers: { 'Authorization': `Bearer ${process.env.WHAPIFY_TOKEN}`, 'Content-Type': 'application/json' }
-    });
-  } catch (err) {
-    console.error('❌ Error enviando mensaje Whapify:', err.message);
-  }
+    await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text: texto, parse_mode: 'Markdown' });
+  } catch (err) { console.error('❌ Error enviando mensaje Telegram:', err.message); }
+}
+
+async function enviarAccionEscribiendo(chatId) {
+  try { await axios.post(`${TELEGRAM_API}/sendChatAction`, { chat_id: chatId, action: 'typing' }); } catch(e) {}
 }
 
 // ─── PLAYWRIGHT: CREAR USUARIO ───────────────────────────────────────────────
@@ -145,67 +145,52 @@ async function acreditarFichas(usuarioCasino, monto) {
   finally { if (browser) await browser.close(); }
 }
 
-// ─── WEBHOOK DE WHAPIFY ───────────────────────────────────────────────────────
-app.post('/webhook', async (req, res) => {
-  res.json({ ok: true }); // Responder rápido a Whapify
-  
-  console.log('📩 Webhook recibido:', JSON.stringify(req.body).substring(0, 200));
-  
-  const body = req.body;
-  const telefono = body.phone || body.whatsapp || body.contact_phone || body.user_phone || '';
-  const userId = body.id || body.user_id || body.contact_id || '';
-  const mensaje = body.last_message || body.message || body.text || '';
-  const tieneImagen = body.has_media || body.media_url || false;
-
-  if (!userId && !telefono) {
-    console.log('⚠️ Sin userId ni telefono en webhook');
-    return;
-  }
-
-  const identificador = telefono || userId;
-
+// ─── PROCESAR MENSAJE TELEGRAM ────────────────────────────────────────────────
+async function procesarMensaje(chatId, telegramId, texto, foto) {
   try {
-    let jugador = await Jugador.findOne({ telefono: identificador });
-    if (!jugador) jugador = await Jugador.create({ telefono: identificador, estado: 'nuevo', historial: [] });
+    let jugador = await Jugador.findOne({ telegramId });
+    if (!jugador) jugador = await Jugador.create({ telegramId, estado: 'nuevo', historial: [] });
 
-    let respuesta = '';
+    await enviarAccionEscribiendo(chatId);
 
-    // Comprobante de pago
-    if (tieneImagen && jugador.estado === 'esperando_comprobante') {
-      const mediaUrl = body.media_url || '';
-      if (mediaUrl) {
-        await enviarMensajeWhapify(userId, '👀 vi el comprobante, lo estoy revisando...');
-        // Descargar imagen y procesar con OCR
-        try {
-          const imgResp = await axios.get(mediaUrl, { responseType: 'arraybuffer' });
-          const base64 = Buffer.from(imgResp.data).toString('base64');
-          const { montoDetectado, cbuVerificado } = await extraerMonto(base64);
-          
-          if (!montoDetectado) {
-            respuesta = 'mmm no pude leer bien el comprobante, lo podés mandar de nuevo?';
-          } else if (!cbuVerificado) {
-            respuesta = `no veo transferencia al alias *${process.env.CBU_ALIAS}*, revisá que hayas mandado al alias correcto`;
-          } else {
-            await enviarMensajeWhapify(userId, `joya! comprobante por *$${Number(montoDetectado).toLocaleString('es-AR')}* recibido ✅ acreditando...`);
-            const result = await acreditarFichas(jugador.usuarioCasino, montoDetectado);
-            await Transaccion.create({ telefono: identificador, monto: montoDetectado, estado: result.exito ? 'acreditado' : 'revision_manual' });
-            jugador.estado = 'activo';
-            await jugador.save();
-            respuesta = result.exito 
-              ? `listo! te acredité *$${Number(montoDetectado).toLocaleString('es-AR')}* en la cuenta 🎰 ya podés jugar!`
-              : `recibí el comprobante ✅ en unos minutos te confirmamos la acreditación`;
-          }
-        } catch(e) {
-          respuesta = 'no pude procesar la imagen, la podés mandar de nuevo?';
+    // Comprobante de pago (foto)
+    if (foto && jugador.estado === 'esperando_comprobante') {
+      await enviarMensaje(chatId, '👀 vi el comprobante, lo estoy revisando...');
+      try {
+        // Obtener URL de la foto
+        const fileInfo = await axios.get(`${TELEGRAM_API}/getFile?file_id=${foto}`);
+        const filePath = fileInfo.data.result.file_path;
+        const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`;
+        const imgResp = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+        const base64 = Buffer.from(imgResp.data).toString('base64');
+        
+        const { montoDetectado, cbuVerificado } = await extraerMonto(base64);
+        
+        if (!montoDetectado) {
+          await enviarMensaje(chatId, 'mmm no pude leer bien el comprobante, lo podés mandar de nuevo?');
+        } else if (!cbuVerificado) {
+          await enviarMensaje(chatId, `no veo transferencia al alias *${process.env.CBU_ALIAS}*, revisá que hayas mandado al alias correcto`);
+        } else {
+          await enviarMensaje(chatId, `joya! comprobante por *$${Number(montoDetectado).toLocaleString('es-AR')}* recibido ✅ acreditando las fichas...`);
+          const result = await acreditarFichas(jugador.usuarioCasino, montoDetectado);
+          await Transaccion.create({ telegramId, monto: montoDetectado, estado: result.exito ? 'acreditado' : 'revision_manual' });
+          jugador.estado = 'activo';
+          await jugador.save();
+          const respuesta = result.exito 
+            ? `listo! te acredité *$${Number(montoDetectado).toLocaleString('es-AR')}* en tu cuenta 🎰 ya podés jugar!`
+            : `recibí el comprobante ✅ en unos minutos te confirmamos la acreditación`;
+          await enviarMensaje(chatId, respuesta);
         }
-        await enviarMensajeWhapify(userId, respuesta);
-        return;
+      } catch(e) {
+        console.error('Error procesando imagen:', e);
+        await enviarMensaje(chatId, 'no pude procesar la imagen, la podés mandar de nuevo?');
       }
+      return;
     }
 
-    // Mensajes de texto
-    const texto = mensaje.trim();
     if (!texto) return;
+
+    let respuesta = '';
 
     if (jugador.estado === 'nuevo') {
       jugador.estado = 'esperando_nombre';
@@ -220,14 +205,14 @@ app.post('/webhook', async (req, res) => {
         jugador.nombre = nombre;
         jugador.estado = 'creando_cuenta';
         await jugador.save();
-        await enviarMensajeWhapify(userId, `perfecto ${nombre}! creando tu cuenta, dame un segundo... 🎰`);
+        await enviarMensaje(chatId, `perfecto ${nombre}! creando tu cuenta, dame un segundo... 🎰`);
         const num = await obtenerSiguienteNumero();
         const result = await crearUsuario(nombre, num);
         if (result.exito) {
           jugador.usuarioCasino = result.usuario;
           jugador.estado = 'activo';
           await jugador.save();
-          respuesta = `listo! tu cuenta está creada 🎉\n\n👤 Usuario: *${result.usuario}*\n🔑 Contraseña: *${result.contrasenia}*\n\n🌐 asesdelnorte.com\n\nPara cargar fichas transferís al alias *${process.env.CBU_ALIAS}* mínimo $${process.env.MONTO_MINIMO || 3000} y me mandás el comprobante 📸`;
+          respuesta = `listo! tu cuenta está creada 🎉\n\n👤 Usuario: *${result.usuario}*\n🔑 Contraseña: *${result.contrasenia}*\n\n🌐 asesdelnorte.com\n\nPara cargar fichas transferís al alias *${process.env.CBU_ALIAS}* mínimo $${process.env.MONTO_MINIMO || 3000} y me mandás el comprobante acá 📸`;
         } else {
           jugador.estado = 'activo';
           await jugador.save();
@@ -238,7 +223,7 @@ app.post('/webhook', async (req, res) => {
     } else if (texto.match(/deposit|cargar|fichas|pagar|transferi|quiero cargar|cómo cargo|como cargo|saldo/i)) {
       jugador.estado = 'esperando_comprobante';
       await jugador.save();
-      respuesta = `dale! transferís al alias:\n\n*${process.env.CBU_ALIAS}*\n\nmínimo $${process.env.MONTO_MINIMO || 3000} - cuando hagas la transf mandame el comprobante 📸`;
+      respuesta = `dale! transferís al alias:\n\n*${process.env.CBU_ALIAS}*\n\nmínimo $${process.env.MONTO_MINIMO || 3000} - cuando hagas la transf mandame el comprobante acá 📸`;
 
     } else if (jugador.estado === 'activo' && texto.match(/hola|buenas|buenos|hi|hey/i) && jugador.usuarioCasino) {
       respuesta = `hola ${jugador.nombre || ''}! 👋 ya tenés tu cuenta *${jugador.usuarioCasino}*. ¿Querés cargar fichas?`;
@@ -251,56 +236,43 @@ app.post('/webhook', async (req, res) => {
       await jugador.save();
     }
 
-    if (respuesta) await enviarMensajeWhapify(userId, respuesta);
+    if (respuesta) await enviarMensaje(chatId, respuesta);
 
   } catch (err) {
-    console.error('❌ Error webhook:', err);
+    console.error('❌ Error procesando mensaje:', err);
+    await enviarMensaje(chatId, 'perdón, tuve un problema técnico. lo intentás de nuevo?');
   }
+}
+
+// ─── WEBHOOK TELEGRAM ─────────────────────────────────────────────────────────
+app.post('/telegram', async (req, res) => {
+  res.json({ ok: true });
+  const update = req.body;
+  console.log('📩 Telegram update:', JSON.stringify(update).substring(0, 200));
+
+  const message = update.message || update.edited_message;
+  if (!message) return;
+
+  const chatId = message.chat.id;
+  const telegramId = String(message.from.id);
+  const texto = message.text || '';
+  
+  // Detectar foto
+  let fotoFileId = null;
+  if (message.photo && message.photo.length > 0) {
+    fotoFileId = message.photo[message.photo.length - 1].file_id;
+  }
+
+  await procesarMensaje(chatId, telegramId, texto, fotoFileId);
 });
 
 // ─── MCP ─────────────────────────────────────────────────────────────────────
 app.get('/mcp', (req, res) => {
-  res.json({
-    name: 'Nebula Casino Tools', version: '1.0.0',
-    tools: [
-      { name: 'verificar_comprobante', description: 'Verifica un comprobante de transferencia bancaria', inputSchema: { type: 'object', properties: { imagen_base64: { type: 'string' }, telefono: { type: 'string' } }, required: ['imagen_base64', 'telefono'] } },
-      { name: 'crear_usuario', description: 'Crea un nuevo usuario en el casino', inputSchema: { type: 'object', properties: { nombre: { type: 'string' }, telefono: { type: 'string' } }, required: ['nombre', 'telefono'] } },
-      { name: 'acreditar_fichas', description: 'Acredita fichas en la cuenta del casino', inputSchema: { type: 'object', properties: { usuario_casino: { type: 'string' }, monto: { type: 'number' }, telefono: { type: 'string' } }, required: ['usuario_casino', 'monto', 'telefono'] } },
-      { name: 'buscar_jugador', description: 'Busca un jugador por teléfono', inputSchema: { type: 'object', properties: { telefono: { type: 'string' } }, required: ['telefono'] } }
-    ]
-  });
-});
-
-app.post('/mcp', async (req, res) => {
-  const { tool, input } = req.body;
-  console.log(`🔧 MCP: ${tool}`);
-  try {
-    switch (tool) {
-      case 'verificar_comprobante': {
-        const { montoDetectado, cbuVerificado } = await extraerMonto(input.imagen_base64);
-        await Transaccion.create({ telefono: input.telefono, monto: montoDetectado, estado: montoDetectado && cbuVerificado ? 'revision_manual' : 'rechazado' });
-        return res.json({ success: true, resultado: { monto_detectado: montoDetectado, alias_verificado: cbuVerificado, valido: !!(montoDetectado && cbuVerificado) } });
-      }
-      case 'crear_usuario': {
-        let jugador = await Jugador.findOne({ telefono: input.telefono });
-        if (!jugador) jugador = await Jugador.create({ telefono: input.telefono, nombre: input.nombre, estado: 'creando_cuenta' });
-        const num = await obtenerSiguienteNumero();
-        const result = await crearUsuario(input.nombre, num);
-        if (result.exito) await Jugador.findOneAndUpdate({ telefono: input.telefono }, { usuarioCasino: result.usuario, estado: 'activo', nombre: input.nombre });
-        return res.json({ success: result.exito, resultado: result });
-      }
-      case 'acreditar_fichas': {
-        const result = await acreditarFichas(input.usuario_casino, input.monto);
-        if (result.exito) await Transaccion.findOneAndUpdate({ telefono: input.telefono, estado: 'revision_manual' }, { estado: 'acreditado' }, { sort: { creadoEn: -1 } });
-        return res.json({ success: result.exito, resultado: result });
-      }
-      case 'buscar_jugador': {
-        const jugador = await Jugador.findOne({ telefono: input.telefono });
-        return res.json({ success: true, resultado: jugador ? { existe: true, nombre: jugador.nombre, usuario_casino: jugador.usuarioCasino, estado: jugador.estado } : { existe: false } });
-      }
-      default: return res.status(400).json({ success: false, error: 'Herramienta desconocida' });
-    }
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  res.json({ name: 'Nebula Casino Tools', version: '1.0.0', tools: [
+    { name: 'crear_usuario', description: 'Crea un usuario en el casino', inputSchema: { type: 'object', properties: { nombre: { type: 'string' }, telefono: { type: 'string' } }, required: ['nombre'] } },
+    { name: 'acreditar_fichas', description: 'Acredita fichas', inputSchema: { type: 'object', properties: { usuario_casino: { type: 'string' }, monto: { type: 'number' } }, required: ['usuario_casino', 'monto'] } },
+    { name: 'buscar_jugador', description: 'Busca jugador', inputSchema: { type: 'object', properties: { telegramId: { type: 'string' } }, required: ['telegramId'] } }
+  ]});
 });
 
 // ─── PANEL ────────────────────────────────────────────────────────────────────
@@ -309,4 +281,14 @@ app.get('/panel', (req, res) => { const path = require('path'); res.sendFile(pat
 app.get('/jugadores', async (req, res) => res.json(await Jugador.find({}).sort({ creadoEn: -1 })));
 app.get('/transacciones', async (req, res) => res.json(await Transaccion.find().sort({ creadoEn: -1 }).limit(100)));
 
-app.listen(port, () => console.log(`🚀 Servidor corriendo en puerto ${port}`));
+app.listen(port, async () => {
+  console.log(`🚀 Servidor corriendo en puerto ${port}`);
+  // Configurar webhook de Telegram
+  try {
+    const webhookUrl = `https://gustavoases.com/telegram`;
+    await axios.post(`${TELEGRAM_API}/setWebhook`, { url: webhookUrl });
+    console.log(`✅ Webhook Telegram configurado: ${webhookUrl}`);
+  } catch (err) {
+    console.error('❌ Error configurando webhook Telegram:', err.message);
+  }
+});
