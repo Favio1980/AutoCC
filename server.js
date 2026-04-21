@@ -2,18 +2,16 @@ require('dotenv').config({ path: 'env.txt' });
 const express = require('express');
 const mongoose = require('mongoose');
 const vision = require('@google-cloud/vision');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
-const Anthropic = require('@anthropic-ai/sdk');
-const pino = require('pino');
-const path = require('path');
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
 const QRCode = require('qrcode');
-const fs = require('fs');
+const Anthropic = require('@anthropic-ai/sdk');
+const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 3001;
 app.use(express.json({ limit: '20mb' }));
 
-// ─── MONGODB ─────────────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -39,7 +37,6 @@ const transaccionSchema = new mongoose.Schema({
 });
 const Transaccion = mongoose.model('Transaccion', transaccionSchema);
 
-// ─── GOOGLE VISION OCR ───────────────────────────────────────────────────────
 let visionClient;
 try {
   const credentials = JSON.parse(process.env.OCR_CREDENTIALS_JSON);
@@ -49,10 +46,9 @@ try {
   console.error('❌ OCR error:', err.message);
 }
 
-async function extraerMontoDeComprobante(buffer) {
+async function extraerMontoDeComprobante(base64Image) {
   try {
-    const base64 = buffer.toString('base64');
-    const [result] = await visionClient.textDetection({ image: { content: base64 } });
+    const [result] = await visionClient.textDetection({ image: { content: base64Image } });
     const texto = result.textAnnotations.length ? result.textAnnotations[0].description : '';
     const patrones = [
       /\$\s*([\d.,]+)/g,
@@ -76,7 +72,6 @@ async function extraerMontoDeComprobante(buffer) {
   }
 }
 
-// ─── ANTHROPIC ───────────────────────────────────────────────────────────────
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function procesarMensajeConIA(jugador, mensajeUsuario) {
@@ -101,176 +96,141 @@ Mensajes cortos, máximo 3 párrafos, 1-2 emojis. Respondé SOLO el mensaje para
   return response.content[0].text;
 }
 
-// ─── WHATSAPP CON BAILEYS ────────────────────────────────────────────────────
-let sock;
 let qrImageBase64 = null;
 let waConnected = false;
 
-async function conectarWhatsApp() {
-  // Usar /tmp para la sesión (Render permite escritura ahí)
-  const { state, saveCreds } = await useMultiFileAuthState('/tmp/auth_info');
+const waClient = new Client({
+  authStrategy: new LocalAuth({ dataPath: '/root/.wwebjs_auth' }),
+  puppeteer: {
+    executablePath: '/usr/bin/chromium-browser',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+    ],
+  },
+});
 
-  sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-  });
+waClient.on('qr', async qr => {
+  console.log('📱 QR generado - visitá /qr para escanearlo');
+  qrcode.generate(qr, { small: true });
+  try {
+    qrImageBase64 = await QRCode.toDataURL(qr);
+  } catch(e) {
+    console.error('Error generando QR imagen:', e);
+  }
+});
 
-  sock.ev.on('creds.update', saveCreds);
+waClient.on('ready', () => {
+  waConnected = true;
+  qrImageBase64 = null;
+  console.log('✅ WhatsApp conectado');
+});
 
-  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-    if (qr) {
-      console.log('📱 QR generado - visitá /qr para escanearlo');
-      // Convertir QR a imagen base64 para mostrarlo en la web
+waClient.on('disconnected', () => {
+  waConnected = false;
+  console.log('❌ WhatsApp desconectado');
+});
+
+waClient.on('message', async msg => {
+  if (msg.from.includes('@g.us')) return;
+  const telefono = msg.from.replace('@c.us', '');
+
+  try {
+    let jugador = await Jugador.findOne({ telefono });
+    if (!jugador) jugador = await Jugador.create({ telefono, estado: 'nuevo', historial: [] });
+
+    let respuesta = '';
+
+    if (msg.hasMedia && jugador.estado === 'esperando_comprobante') {
+      await waClient.sendMessage(msg.from, '🔍 Analizando tu comprobante...');
       try {
-        qrImageBase64 = await QRCode.toDataURL(qr);
-      } catch(e) {
-        console.error('Error generando QR imagen:', e);
-      }
-    }
-    if (connection === 'close') {
-      waConnected = false;
-      qrImageBase64 = null;
-      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log('Conexión cerrada. Reconectando:', shouldReconnect);
-      if (shouldReconnect) setTimeout(conectarWhatsApp, 3000);
-    } else if (connection === 'open') {
-      waConnected = true;
-      qrImageBase64 = null;
-      console.log('✅ WhatsApp conectado');
-    }
-  });
+        const media = await msg.downloadMedia();
+        const { montoDetectado, cbuVerificado, texto } = await extraerMontoDeComprobante(media.data);
+        const transaccion = await Transaccion.create({ telefono, monto: montoDetectado, textoOCR: texto, estado: 'revision_manual' });
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
-
-    for (const msg of messages) {
-      if (msg.key.fromMe) continue;
-      if (msg.key.remoteJid.includes('@g.us')) continue;
-
-      const telefono = msg.key.remoteJid.replace('@s.whatsapp.net', '');
-      const tieneImagen = !!(msg.message?.imageMessage);
-      const textoMensaje = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-
-      try {
-        let jugador = await Jugador.findOne({ telefono });
-        if (!jugador) jugador = await Jugador.create({ telefono, estado: 'nuevo', historial: [] });
-
-        let respuesta = '';
-
-        if (tieneImagen && jugador.estado === 'esperando_comprobante') {
-          await sock.sendMessage(msg.key.remoteJid, { text: '🔍 Analizando tu comprobante...' });
-          try {
-            const buffer = await downloadMediaMessage(msg, 'buffer', {});
-            const { montoDetectado, cbuVerificado, texto } = await extraerMontoDeComprobante(buffer);
-            const transaccion = await Transaccion.create({ telefono, monto: montoDetectado, textoOCR: texto, estado: 'revision_manual' });
-
-            if (!montoDetectado) {
-              respuesta = '❌ No pude detectar el monto. ¿Podés mandar una foto más clara?';
-              await transaccion.updateOne({ estado: 'rechazado' });
-            } else if (!cbuVerificado) {
-              respuesta = `⚠️ No veo transferencia a nuestro alias *${process.env.CBU_ALIAS}*. ¿Verificás que hayas transferido al alias correcto?`;
-              await transaccion.updateOne({ estado: 'rechazado' });
-            } else {
-              const operador = process.env.OPERADOR_TELEFONO;
-              if (operador) {
-                await sock.sendMessage(`${operador}@s.whatsapp.net`, {
-                  text: `🔔 *DEPÓSITO PARA ACREDITAR*\n\n👤 ${jugador.nombre || telefono}\n📱 ${telefono}\n🎰 Usuario: ${jugador.usuarioCasino || 'sin cuenta'}\n💰 Monto: $${Number(montoDetectado).toLocaleString('es-AR')}\n\nAcreditá en el casino y confirmá desde el panel.`
-                });
-              }
-              jugador.estado = 'activo';
-              await jugador.save();
-              respuesta = `✅ Comprobante recibido por *$${Number(montoDetectado).toLocaleString('es-AR')}*. Estamos verificando y en minutos te confirmamos la acreditación ⏳`;
-            }
-          } catch (e) {
-            console.error('Error imagen:', e);
-            respuesta = '❌ No pude procesar la imagen. ¿La podés mandar de nuevo?';
-          }
-          await sock.sendMessage(msg.key.remoteJid, { text: respuesta });
-          continue;
-        }
-
-        const texto = textoMensaje.trim();
-        if (!texto) continue;
-
-        if (jugador.estado === 'nuevo' && texto.match(/registr|cuenta|crear|quiero jugar|empezar|hola|buenas|info/i)) {
-          jugador.estado = 'esperando_nombre';
-          await jugador.save();
-          respuesta = '¡Hola! Bienvenido 🎰 Para crear tu cuenta necesito tu nombre. ¿Cómo te llamás?';
-
-        } else if (jugador.estado === 'esperando_nombre') {
-          const nombre = texto.replace(/[^a-záéíóúñA-ZÁÉÍÓÚÑ\s]/g, '').trim();
-          if (nombre.length < 2) {
-            respuesta = 'No entendí tu nombre. ¿Me lo podés escribir de nuevo?';
-          } else {
-            jugador.nombre = nombre;
-            jugador.estado = 'activo';
-            await jugador.save();
-            const operador = process.env.OPERADOR_TELEFONO;
-            if (operador) {
-              await sock.sendMessage(`${operador}@s.whatsapp.net`, {
-                text: `🆕 *NUEVO JUGADOR*\n\n👤 Nombre: ${nombre}\n📱 Tel: ${telefono}\n\nCreá la cuenta en el casino.`
-              });
-            }
-            respuesta = `¡Perfecto, ${nombre}! 🎉 Tu cuenta está siendo creada. En unos minutos te mandamos tus datos de acceso.\n\n¿Querés saber cómo hacer tu primer depósito?`;
-          }
-
-        } else if (texto.match(/deposit|cargar|fichas|pagar|transferi|quiero cargar/i)) {
-          jugador.estado = 'esperando_comprobante';
-          await jugador.save();
-          respuesta = `💳 Para depositar transferí al alias:\n\n*${process.env.CBU_ALIAS}*\n\nMínimo: $${Number(process.env.MONTO_MINIMO || 1000).toLocaleString('es-AR')}\n\nCuando hagas la transferencia mandame el comprobante 📸`;
-
+        if (!montoDetectado) {
+          respuesta = '❌ No pude detectar el monto. ¿Podés mandar una foto más clara?';
+          await transaccion.updateOne({ estado: 'rechazado' });
+        } else if (!cbuVerificado) {
+          respuesta = `⚠️ No veo transferencia a nuestro alias *${process.env.CBU_ALIAS}*. ¿Verificás que hayas transferido al alias correcto?`;
+          await transaccion.updateOne({ estado: 'rechazado' });
         } else {
-          jugador.historial.push({ rol: 'user', contenido: texto });
-          if (jugador.historial.length > 20) jugador.historial.shift();
-          respuesta = await procesarMensajeConIA(jugador, texto);
-          jugador.historial.push({ rol: 'assistant', contenido: respuesta });
+          const operador = process.env.OPERADOR_TELEFONO;
+          if (operador) {
+            await waClient.sendMessage(`${operador}@c.us`, `🔔 *DEPÓSITO PARA ACREDITAR*\n\n👤 ${jugador.nombre || telefono}\n📱 ${telefono}\n🎰 Usuario: ${jugador.usuarioCasino || 'sin cuenta'}\n💰 Monto: $${Number(montoDetectado).toLocaleString('es-AR')}\n\nAcreditá en el casino y confirmá desde el panel.`);
+          }
+          jugador.estado = 'activo';
           await jugador.save();
+          respuesta = `✅ Comprobante recibido por *$${Number(montoDetectado).toLocaleString('es-AR')}*. Estamos verificando y en minutos te confirmamos la acreditación ⏳`;
         }
-
-        if (respuesta) await sock.sendMessage(msg.key.remoteJid, { text: respuesta });
-
-      } catch (err) {
-        console.error('❌ Error:', err);
-        await sock.sendMessage(msg.key.remoteJid, { text: '⚠️ Error técnico. Intentá de nuevo.' });
+      } catch(e) {
+        respuesta = '❌ No pude procesar la imagen. ¿La podés mandar de nuevo?';
       }
+      await waClient.sendMessage(msg.from, respuesta);
+      return;
     }
-  });
-}
 
-conectarWhatsApp();
+    const texto = msg.body?.trim() || '';
+    if (!texto) return;
 
-// ─── ENDPOINTS ───────────────────────────────────────────────────────────────
+    if (jugador.estado === 'nuevo' && texto.match(/registr|cuenta|crear|quiero jugar|empezar|hola|buenas|info/i)) {
+      jugador.estado = 'esperando_nombre';
+      await jugador.save();
+      respuesta = '¡Hola! Bienvenido 🎰 Para crear tu cuenta necesito tu nombre. ¿Cómo te llamás?';
+
+    } else if (jugador.estado === 'esperando_nombre') {
+      const nombre = texto.replace(/[^a-záéíóúñA-ZÁÉÍÓÚÑ\s]/g, '').trim();
+      if (nombre.length < 2) {
+        respuesta = 'No entendí tu nombre. ¿Me lo podés escribir de nuevo?';
+      } else {
+        jugador.nombre = nombre;
+        jugador.estado = 'activo';
+        await jugador.save();
+        const operador = process.env.OPERADOR_TELEFONO;
+        if (operador) {
+          await waClient.sendMessage(`${operador}@c.us`, `🆕 *NUEVO JUGADOR*\n\n👤 Nombre: ${nombre}\n📱 Tel: ${telefono}\n\nCreá la cuenta en el casino.`);
+        }
+        respuesta = `¡Perfecto, ${nombre}! 🎉 Tu cuenta está siendo creada. En unos minutos te mandamos tus datos de acceso.\n\n¿Querés saber cómo hacer tu primer depósito?`;
+      }
+
+    } else if (texto.match(/deposit|cargar|fichas|pagar|transferi|quiero cargar/i)) {
+      jugador.estado = 'esperando_comprobante';
+      await jugador.save();
+      respuesta = `💳 Para depositar transferí al alias:\n\n*${process.env.CBU_ALIAS}*\n\nMínimo: $${Number(process.env.MONTO_MINIMO || 1000).toLocaleString('es-AR')}\n\nCuando hagas la transferencia mandame el comprobante 📸`;
+
+    } else {
+      jugador.historial.push({ rol: 'user', contenido: texto });
+      if (jugador.historial.length > 20) jugador.historial.shift();
+      respuesta = await procesarMensajeConIA(jugador, texto);
+      jugador.historial.push({ rol: 'assistant', contenido: respuesta });
+      await jugador.save();
+    }
+
+    if (respuesta) await waClient.sendMessage(msg.from, respuesta);
+
+  } catch (err) {
+    console.error('❌ Error:', err);
+    await waClient.sendMessage(msg.from, '⚠️ Error técnico. Intentá de nuevo.');
+  }
+});
+
+waClient.initialize();
+
 app.get('/', (req, res) => res.send('🎰 Nebula Casino Bot funcionando'));
 
-// Página para escanear el QR
 app.get('/qr', (req, res) => {
   if (waConnected) {
-    return res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white">
-        <h2 style="color:#22d87a">✅ WhatsApp conectado</h2>
-        <p>El bot está funcionando correctamente.</p>
-      </body></html>
-    `);
+    return res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2 style="color:#22d87a">✅ WhatsApp conectado</h2><p>El bot está funcionando.</p></body></html>`);
   }
   if (!qrImageBase64) {
-    return res.send(`
-      <html><head><meta http-equiv="refresh" content="3"></head>
-      <body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white">
-        <h2>⏳ Generando QR...</h2>
-        <p>Esta página se actualiza sola. Esperá unos segundos.</p>
-      </body></html>
-    `);
+    return res.send(`<html><head><meta http-equiv="refresh" content="3"></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2>⏳ Generando QR...</h2><p>Esta página se actualiza sola.</p></body></html>`);
   }
-  res.send(`
-    <html><head><meta http-equiv="refresh" content="30"></head>
-    <body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white">
-      <h2 style="color:#7c6dfa">📱 Escanea con WhatsApp</h2>
-      <p>Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo</p>
-      <img src="${qrImageBase64}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block"/>
-      <p style="color:#6b6b80;font-size:13px">El QR expira en 60 segundos. La página se actualiza sola.</p>
-    </body></html>
-  `);
+  res.send(`<html><head><meta http-equiv="refresh" content="30"></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#0a0a0f;color:white"><h2 style="color:#7c6dfa">📱 Escanea con WhatsApp</h2><p>Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo</p><img src="${qrImageBase64}" style="width:300px;height:300px;border-radius:12px;margin:20px auto;display:block"/><p style="color:#6b6b80;font-size:13px">El QR expira en 60 segundos.</p></body></html>`);
 });
 
 app.get('/panel', (req, res) => res.sendFile(path.join(__dirname, 'panel.html')));
@@ -289,7 +249,7 @@ app.post('/acreditar-manual', async (req, res) => {
   const { telefono, monto } = req.body;
   try {
     await Transaccion.findOneAndUpdate({ telefono, estado: 'revision_manual' }, { estado: 'acreditado' }, { sort: { creadoEn: -1 } });
-    if (sock) await sock.sendMessage(`${telefono}@s.whatsapp.net`, { text: `✅ ¡Fichas acreditadas! Se cargaron *$${Number(monto).toLocaleString('es-AR')}* en tu cuenta. ¡Buena suerte! 🎰` });
+    await waClient.sendMessage(`${telefono}@c.us`, `✅ ¡Fichas acreditadas! Se cargaron *$${Number(monto).toLocaleString('es-AR')}* en tu cuenta. ¡Buena suerte! 🎰`);
     res.json({ exito: true });
   } catch (e) { res.status(500).json({ exito: false, error: e.message }); }
 });
@@ -298,7 +258,7 @@ app.post('/rechazar-transaccion', async (req, res) => {
   const { id, telefono } = req.body;
   try {
     await Transaccion.findByIdAndUpdate(id, { estado: 'rechazado' });
-    if (sock) await sock.sendMessage(`${telefono}@s.whatsapp.net`, { text: '❌ Tu comprobante fue rechazado. Si creés que es un error escribinos.' });
+    await waClient.sendMessage(`${telefono}@c.us`, '❌ Tu comprobante fue rechazado. Si creés que es un error escribinos.');
     res.json({ exito: true });
   } catch (e) { res.status(500).json({ exito: false, error: e.message }); }
 });
