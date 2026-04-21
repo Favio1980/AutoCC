@@ -230,6 +230,7 @@ let waConnected = false;
 const waClient = new Client({
   authStrategy: new LocalAuth({ dataPath: '/root/.wwebjs_auth' }),
   webVersionCache: { type: 'none' },
+  restartOnAuthFail: false,
   puppeteer: {
     executablePath: '/root/AutoCC/node_modules/whatsapp-web.js/node_modules/puppeteer/.local-chromium/linux-982053/chrome-linux/chrome',
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
